@@ -9,7 +9,7 @@ This project demonstrates sign language detection using machine learning techniq
 - [Usage](#usage)
 - [Training](#training)
 - [Evaluation](#evaluation)
-
+- [Final Result](#final-result)
 
 ## Features
 - Detect and recognize sign language gestures.
@@ -56,12 +56,16 @@ To train the model, ensure you have prepared your dataset using `create_dataset.
 
 ## Evaluation
 Evaluate the model's performance by running `testing.py` with test images or video frames. The script will provide metrics and visual feedback on the model’s accuracy and predictions.
-A:
-![image](https://github.com/user-attachments/assets/1b6d0a1e-07a4-47e9-9a13-021ed0e7643f)
-B:
 
-![image](https://github.com/user-attachments/assets/79becfbf-0a9b-43dd-920e-83cbe3501469)
-l:
-![Uploading image.png…]()
+## Final Result
+
+### Example A
+![Example A](https://github.com/user-attachments/assets/1b6d0a1e-07a4-47e9-9a13-021ed0e7643f)
+
+### Example B
+![Example B](https://github.com/user-attachments/assets/79becfbf-0a9b-43dd-920e-83cbe3501469)
+
+### Example L
+![Example L](https://github.com/user-attachments/assets/your-image-url)
 
 
