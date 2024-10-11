@@ -1,147 +1,137 @@
-import nltk
 import sys
 import os
-import string
-import math
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+import tensorflow as tf
 
-FILE_MATCHES = 1
-SENTENCE_MATCHES = 1
+from PIL import Image, ImageDraw, ImageFont
+from transformers import AutoTokenizer, TFBertForMaskedLM
+
+# Pre-trained masked language model
+MODEL = "bert-base-uncased"
+
+# Number of predictions to generate
+K = 3
+
+# Constants for generating attention diagrams
+FONT = ImageFont.truetype("assets/fonts/OpenSans-Regular.ttf", 28)
+GRID_SIZE = 40
+PIXELS_PER_WORD = 200
 
 
 def main():
+    text = input("Text: ")
 
-    # Check command-line arguments
-    if len(sys.argv) != 2:
-        sys.exit("Usage: python questions.py corpus")
+    # Tokenize input
+    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    inputs = tokenizer(text, return_tensors="tf")
+    mask_token_index = get_mask_token_index(tokenizer.mask_token_id, inputs)
+    if mask_token_index is None:
+        sys.exit(f"Input must include mask token {tokenizer.mask_token}.")
 
-    # Calculate IDF values across files
-    files = load_files(sys.argv[1])
-    file_words = {
-        filename: tokenize(files[filename])
-        for filename in files
-    }
-    file_idfs = compute_idfs(file_words)
+    # Use model to process input
+    model = TFBertForMaskedLM.from_pretrained(MODEL)
+    result = model(**inputs, output_attentions=True)
 
-    # Prompt user for query
-    query = set(tokenize(input("Query: ")))
+    # Generate predictions
+    mask_token_logits = result.logits[0, mask_token_index]
+    top_tokens = tf.math.top_k(mask_token_logits, K).indices.numpy()
+    for token in top_tokens:
+        print(text.replace(tokenizer.mask_token, tokenizer.decode([token])))
 
-    # Determine top file matches according to TF-IDF
-    filenames = top_files(query, file_words, file_idfs, n=FILE_MATCHES)
-
-    # Extract sentences from top files
-    sentences = dict()
-    for filename in filenames:
-        for passage in files[filename].split("\n"):
-            for sentence in nltk.sent_tokenize(passage):
-                tokens = tokenize(sentence)
-                if tokens:
-                    sentences[sentence] = tokens
-
-    # Compute IDF values across sentences
-    idfs = compute_idfs(sentences)
-
-    # Determine top sentence matches
-    matches = top_sentences(query, sentences, idfs, n=SENTENCE_MATCHES)
-    for match in matches:
-        print(match)
+    # Visualize attentions
+    visualize_attentions(inputs.tokens(), result.attentions)
 
 
-def load_files(directory):
+def get_mask_token_index(mask_token_id, inputs):
     """
-    Given a directory name, return a dictionary mapping the filename of each
-    `.txt` file inside that directory to the file's contents as a string.
+    Return the index of the token with the specified `mask_token_id`, or
+    `None` if not present in the `inputs`.
     """
-    dictionary = {}
-
-    for file in os.listdir(directory):
-        with open(os.path.join(directory, file), encoding="utf-8") as ofile:
-            dictionary[file] = ofile.read()
-
-    return dictionary
+    for i, token in enumerate(inputs.input_ids[0]):
+        if token == mask_token_id:
+            return i
+    return None
 
 
-def tokenize(document):
+def get_color_for_attention_score(attention_score):
     """
-    Given a document (represented as a string), return a list of all of the
-    words in that document, in order.
-
-    Process document by coverting all words to lowercase, and removing any
-    punctuation or English stopwords.
+    Return a tuple of three integers representing a shade of gray for the
+    given `attention_score`. Each value should be in the range [0, 255].
     """
-
-    tokenized = nltk.tokenize.word_tokenize(document.lower())
-
-    final_list = [x for x in tokenized if x not in string.punctuation and x not in nltk.corpus.stopwords.words("english")]
-
-    return final_list
+    attention_score = attention_score.numpy()
+    return (round(attention_score * 255), round(attention_score * 255), round(attention_score * 255))
 
 
-def compute_idfs(documents):
+def visualize_attentions(tokens, attentions):
     """
-    Given a dictionary of `documents` that maps names of documents to a list
-    of words, return a dictionary that maps words to their IDF values.
+    Produce a graphical representation of self-attention scores.
 
-    Any word that appears in at least one of the documents should be in the
-    resulting dictionary.
+    For each attention layer, one diagram should be generated for each
+    attention head in the layer. Each diagram should include the list of
+    `tokens` in the sentence. The filename for each diagram should
+    include both the layer number (starting count from 1) and head number
+    (starting count from 1).
     """
-    idf_dictio = {}
-    doc_len = len(documents)
-
-    unique_words = set(sum(documents.values(), []))
-
-    for word in unique_words:
-        count = 0
-        for doc in documents.values():
-            if word in doc:
-                count += 1
-
-        idf_dictio[word] = math.log(doc_len/count)
-
-    return idf_dictio
+    for i, layer in enumerate(attentions):
+        for k in range(len(layer[0])):
+            layer_number = i + 1
+            head_number = k + 1
+            generate_diagram(
+                layer_number,
+                head_number,
+                tokens,
+                attentions[i][0][k]
+            )
 
 
-def top_files(query, files, idfs, n):
+def generate_diagram(layer_number, head_number, tokens, attention_weights):
     """
-    Given a `query` (a set of words), `files` (a dictionary mapping names of
-    files to a list of their words), and `idfs` (a dictionary mapping words
-    to their IDF values), return a list of the filenames of the the `n` top
-    files that match the query, ranked according to tf-idf.
+    Generate a diagram representing the self-attention scores for a single
+    attention head. The diagram shows one row and column for each of the
+    `tokens`, and cells are shaded based on `attention_weights`, with lighter
+    cells corresponding to higher attention scores.
+
+    The diagram is saved with a filename that includes both the `layer_number`
+    and `head_number`.
     """
-    scores = {}
-    for filename, filecontent in files.items():
-        file_score = 0
-        for word in query:
-            if word in filecontent:
-                file_score += filecontent.count(word) * idfs[word]
-        if file_score != 0:
-            scores[filename] = file_score
+    # Create new image
+    image_size = GRID_SIZE * len(tokens) + PIXELS_PER_WORD
+    img = Image.new("RGBA", (image_size, image_size), "black")
+    draw = ImageDraw.Draw(img)
 
-    sorted_by_score = [k for k, v in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
-    return sorted_by_score[:n]
+    # Draw each token onto the image
+    for i, token in enumerate(tokens):
+        # Draw token columns
+        token_image = Image.new("RGBA", (image_size, image_size), (0, 0, 0, 0))
+        token_draw = ImageDraw.Draw(token_image)
+        token_draw.text(
+            (image_size - PIXELS_PER_WORD, PIXELS_PER_WORD + i * GRID_SIZE),
+            token,
+            fill="white",
+            font=FONT
+        )
+        token_image = token_image.rotate(90)
+        img.paste(token_image, mask=token_image)
 
+        # Draw token rows
+        _, _, width, _ = draw.textbbox((0, 0), token, font=FONT)
+        draw.text(
+            (PIXELS_PER_WORD - width, PIXELS_PER_WORD + i * GRID_SIZE),
+            token,
+            fill="white",
+            font=FONT
+        )
 
-def top_sentences(query, sentences, idfs, n):
-    """
-    Given a `query` (a set of words), `sentences` (a dictionary mapping
-    sentences to a list of their words), and `idfs` (a dictionary mapping words
-    to their IDF values), return a list of the `n` top sentences that match
-    the query, ranked according to idf. If there are ties, preference should
-    be given to sentences that have a higher query term density.
-    """
-    scores = {}
-    for sentence, sentwords in sentences.items():
-        score = 0
-        for word in query:
-            if word in sentwords:
-                score += idfs[word]
+    # Draw each word
+    for i in range(len(tokens)):
+        y = PIXELS_PER_WORD + i * GRID_SIZE
+        for j in range(len(tokens)):
+            x = PIXELS_PER_WORD + j * GRID_SIZE
+            color = get_color_for_attention_score(attention_weights[i][j])
+            draw.rectangle((x, y, x + GRID_SIZE, y + GRID_SIZE), fill=color)
 
-        if score != 0:
-            density = sum([sentwords.count(x) for x in query]) / len(sentwords)
-            scores[sentence] = (score, density)
-
-    sorted_by_score = [k for k, v in sorted(scores.items(), key=lambda x: (x[1][0], x[1][1]), reverse=True)]
-
-    return sorted_by_score[:n]
+    # Save image
+    img.save(f"Attention_Layer{layer_number}_Head{head_number}.png")
 
 
 if __name__ == "__main__":
